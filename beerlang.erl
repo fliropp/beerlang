@@ -2,71 +2,144 @@
 -export([start/0]).
 -import(timer,[sleep/1]).
 
+
+
+
 start() ->
-  BarPid = spawn(fun() -> bar([], true) end),
+  BouncerPid = spawn(fun() -> bouncer() end),
+  BarPid = spawn(fun() -> bar(#{}, true, BouncerPid) end),
   BTPid = spawn(fun() -> bartender(BarPid) end),
   io:fwrite("the Erlang bar is open, folks!\n"),
-  BarPid ! {cus_count_inc, spawn(fun() -> customer(BTPid, beer, 0) end)},
+  BarPid ! {cus_count_inc, spawn(fun() -> customer(BTPid, beer, "student") end)},
   timer:sleep(300),
-  BarPid ! {cus_count_inc, spawn(fun() -> customer(BTPid, wine, 0) end)},
+  BarPid ! {cus_count_inc, spawn(fun() -> customer(BTPid, wine, "woman") end)},
   timer:sleep(300),
-  BarPid ! {cus_count_inc, spawn(fun() -> customer(BTPid, scotch, 0) end)}.
+  BarPid ! {cus_count_inc, spawn(fun() -> customer(BTPid, scotch, "drunk") end)}.
 
 
-bar(Customers, Init) ->
-  if (Customers == []) and (Init == false) -> io:fwrite("Everyone has gone home - the Erlang bar is closed.\n - THE END -\n");
+bar(Customers, Init, Bouncer) ->
+  if (Customers == #{}) and (Init == false) -> io:fwrite("Everyone has gone home - the Erlang bar is closed.\n - THE END -\n");
   true ->
     receive
-      {cus_count_inc, CPid} -> bar(lists:append(Customers, [CPid]), false);
-      {cus_count_dec, CPid} -> bar(lists:delete(CPid, Customers), false);
-      print_bar_status -> io:fwrite("---\ncusts in bar: ~p ~n\n----\n", [Customers]), bar(Customers, false)
+      {cus_count_inc, CPid} -> bar(add_customer(CPid, Customers), false, Bouncer);
+      {cus_count_dec, CPid} -> bar(rm_customer(CPid, Customers), false, Bouncer);
+      {cus_units_inc, CPid} -> bar(inc_units(CPid, Customers), false, Bouncer);
+      {order_verify, CPid, BTPid, Drink} ->
+        Units = get_units(CPid, Customers),
+        if
+          Units < 3 -> BTPid ! {order_ok, Drink, CPid}, bar(Customers, CPid, Bouncer);
+          true ->
+            BTPid ! {order_notok, CPid, Drink},
+            bar(rm_customer(CPid, Customers), false, Bouncer)
+        end
     end
   end.
 
 bartender(BarPid) ->
   receive
-    {order, Drink, Pid, Count } when Count > 1->
-      io:fwrite("Sorry, you have had enough. Go home and get some sleep.\n"),
+    {order, Drink, Pid} ->
+      BarPid ! {order_verify, Pid, self(), Drink},
+      bartender(BarPid);
+    {order_ok, beer, Pid} ->
+      io:fwrite("bartender: here you go, lad, one beer.\n"),
+      Pid ! {order_ok, beer},
+      BarPid ! {cus_units_inc, Pid},
+      bartender(BarPid);
+    {order_ok, wine, Pid} ->
+      io:fwrite("bartender: ah, enchantè, we have a lovely Chardonnay. Here you go. \n"),
+      Pid ! {order_ok, wine},
+      BarPid ! {cus_units_inc, Pid},
+      bartender(BarPid);
+    {order_ok, scotch, Pid} ->
+      io:fwrite("bartender: okay, but I'm keeping an eye on you, pal - one scotch for you.\n"),
+      Pid ! {order_ok, scotch},
+      BarPid ! {cus_units_inc, Pid},
+      bartender(BarPid);
+    {order_notok, Pid, Drink} ->
+      case Drink of
+        beer -> io:fwrite("bartender: sorry, no more beer for you, son\n");
+        wine -> io:fwrite("bartender:sorry, madame - you come fo a bit tipsy, Call it a night, perhaps?\n");
+        scotch -> io:fwrite("bartender: enough, get outta here, boozer. This is a respectable place\n")
+      end,
       Pid ! {not_served, Drink},
-      BarPid ! {cus_count_dec, Pid},
-      bartender(BarPid);
-    {order, beer, Pid, Count } ->
-      io:fwrite("here you go, lad, one beer.\n"),
-      Pid ! {beer, 5678, Count + 1},
-      bartender(BarPid);
-    {order, wine, Pid, Count } ->
-      io:fwrite("ah, enchantè, we have a lovely Chardonnay. Here you go. \n"),
-      Pid ! {wine, 2567, Count + 1},
-      bartender(BarPid);
-    {order, scotch, Pid , Count} ->
-      io:fwrite("okay, but I'm keeping an eye on you, pal - one scotch for you.\n"),
-      Pid ! {scotch, 4123, Count + 1},
       bartender(BarPid)
   end.
 
-customer(B, Drink, InitCount) ->
-  io:fwrite("One ~s, please ?\n", [Drink]),
-  B ! {order, Drink, self(), InitCount},
+bouncer() ->
   receive
-    {beer, Size, Count} ->
-      io:fwrite("ah, thanks, mate.\n"),
-      timer:sleep(Size ),
-      io:fwrite("ok, time for another one of those crazy beers.\n"),
-      customer(B, beer, Count);
-    {wine, Size, Count} ->
-      io:fwrite("Wonderful! Oh, it has a nice bouqet.\n"),
-      timer:sleep(Size),
-      io:fwrite("Oh, I think I will have one more tiny glass of wine, and then off to bed.\n"),
-      customer(B, wine, Count);
-    {scotch, Size, Count} ->
-      io:fwrite("Arrh, keep your nose to yourself and pour it, mister.\n"),
-      timer:sleep(Size),
-      io:fwrite("Arrh, need a drink in the other leg as well.\n"),
-      customer(B, scotch, Count);
-    {not_served, beer} -> io:fwrite("(huh!? Ok, off to the next bar then...)\n");
-    {not_served, wine} -> io:fwrite("That is outragous. I have only had a couple of tiny glasses. Let me speak to the manager. You shall hear from my husband, he is a lawyer.\n");
-    {not_served, scotch} -> io:fwrite("erfhh...Imaz schober as a donky, pal. I will mess you up bad if you dont pour me another one\n")
+    {throw_out, Pid} ->
+      Pid ! evict, io:fwrite("You have had to much to drink, I will have to ask you to leave")
   end.
+
+customer(BT, Drink, Name) ->
+  io:fwrite("~s: One ~s, please ?\n", [Name, Drink]),
+  BT ! {order, Drink, self()},
+  receive
+    {order_ok, beer} ->
+      io:fwrite("~s: ah, thanks, mate.\n", [Name]),
+      timer:sleep(rand_wait()),
+      io:fwrite("~s: ok, time for another one of those crazy beers.\n", [Name]),
+      customer(BT, beer, Name);
+    {order_ok, wine} ->
+      io:fwrite("~s: Wonderful! Oh, it has a nice bouqet.\n", [Name]),
+      timer:sleep(rand_wait()),
+      io:fwrite("~s: Oh, I think I will have one more tiny glass of wine, and then off to bed.\n", [Name]),
+      customer(BT, wine, Name);
+    {order_ok, scotch} ->
+      io:fwrite("~s: Arrh, keep your nose to yourself and pour it, mister.\n", [Name]),
+      timer:sleep(rand_wait()),
+      io:fwrite("~s: Arrh, need a drink in the other leg as well.\n", [Name]),
+      customer(BT, scotch, Name);
+    {not_served, Drink} ->
+      case Drink of
+        beer -> io:fwrite("~s: huh!? Ok, jolly good, off to the next bar then...\n", [Name]);
+        wine -> io:fwrite("~s: That is outragous. I have only had a couple of tiny glasses. Let me speak to the manager. You shall hear from my husband, he is a lawyer.\n", [Name]);
+        scotch -> io:fwrite("~s: erfhh...Imaz schober as a donky, pal. I will mess you up bad if you dont pour me another one\n", [Name])
+      end
+  end.
+
+add_customer(Customer, Customers) ->
+  Found = maps:find(Customer, Customers),
+  if
+    Found == error ->
+      maps:merge(#{Customer => 0}, Customers);
+    true -> Customers
+  end.
+
+rm_customer(Customer, Customers) ->
+  Found = maps:find(Customer, Customers),
+  if
+    Found /= error -> maps:remove(Customer, Customers);
+    true -> Customers
+  end.
+
+inc_units(Customer, Customers) ->
+  Found = maps:find(Customer, Customers),
+  if
+    Found == error -> io:fwrite("can not update inc for ~w", [Customer]), Customers;
+    true ->  maps:update(Customer, maps:get(Customer, Customers) + 1, Customers)
+  end.
+
+get_units(Customer, Customers) ->
+  Found = maps:find(Customer, Customers),
+  if
+    Found /= error -> maps:get(Customer, Customers);
+    true -> 0
+  end.
+
+rand_wait() ->
+  rand:uniform(10) * 1000.
+
+print_custs(Customers) ->
+  maps:fold(
+    fun(K, V, ok) ->
+      io:fwrite("~p: ~p ", [K, V])
+    end, ok, Customers),
+  io:fwrite("\n").
+
+
+
+
 
 
 
