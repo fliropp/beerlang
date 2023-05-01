@@ -27,11 +27,14 @@ bar(Customers, Init, Bouncer) ->
       {order_verify, CPid, BTPid, Drink} ->
         Units = get_units(CPid, Customers),
         if
-          Units < 3 -> BTPid ! {order_ok, Drink, CPid}, bar(Customers, CPid, Bouncer);
+          Units < 1 -> BTPid ! {order_ok, Drink, CPid}, bar(Customers, CPid, Bouncer);
           true ->
             BTPid ! {order_notok, CPid, Drink},
-            bar(rm_customer(CPid, Customers), false, Bouncer)
-        end
+            Bouncer ! {evict, CPid, self()},
+            bar(Customers, false, Bouncer)
+        end;
+      {evict, Pid} -> Bouncer ! {evict, Pid}, bar(Customers, false, Bouncer);
+      {evicted, CPid} -> bar(rm_customer(CPid, Customers), false, Bouncer)
     end
   end.
 
@@ -59,16 +62,32 @@ bartender(BarPid) ->
       case Drink of
         beer -> io:fwrite("bartender: sorry, no more beer for you, son\n");
         wine -> io:fwrite("bartender:sorry, madame - you come fo a bit tipsy, Call it a night, perhaps?\n");
-        scotch -> io:fwrite("bartender: enough, get outta here, boozer. This is a respectable place\n")
+        scotch -> io:fwrite("bartender: enough, get outta here, boozer. This is a respectable place\n");
+        water -> io:fwrite("bartender: we dont make any money of water. You best get out of here\n")
       end,
+      BarPid ! {evict, Pid},
       Pid ! {not_served, Drink},
       bartender(BarPid)
   end.
 
 bouncer() ->
   receive
-    {throw_out, Pid} ->
-      Pid ! evict, io:fwrite("You have had to much to drink, I will have to ask you to leave")
+    {evict, Pid, BPid} ->
+      Pid ! {evict, Pid, self()},
+      io:fwrite("bouncer: You have had to much to drink, I will have to ask you to leave\n"),
+      bouncer(BPid)
+  end.
+
+bouncer(BPid) ->
+  receive
+    {evict, Pid, BPid} ->
+      Pid ! {evict, Pid, self()},
+      io:fwrite("bouncer: You have had to much to drink, I will have to ask you to leave\n"),
+      bouncer(BPid);
+    {leaving, Pid} ->
+      io:fwrite("bouncer: good riddance, another customer gone\n"),
+      BPid ! {evicted, Pid},
+      bouncer(BPid)
   end.
 
 customer(BT, Drink, Name) ->
@@ -94,8 +113,12 @@ customer(BT, Drink, Name) ->
       case Drink of
         beer -> io:fwrite("~s: huh!? Ok, jolly good, off to the next bar then...\n", [Name]);
         wine -> io:fwrite("~s: That is outragous. I have only had a couple of tiny glasses. Let me speak to the manager. You shall hear from my husband, he is a lawyer.\n", [Name]);
-        scotch -> io:fwrite("~s: erfhh...Imaz schober as a donky, pal. I will mess you up bad if you dont pour me another one\n", [Name])
-      end
+        scotch -> io:fwrite("~s: erfhh...Imaz schober as a donky, pal. I will mess you up bad if you dont pour me another one\n", [Name]);
+        water -> io:fwrite("~s: I'll be fine in a minute\n", [Name])
+      end,
+      timer:sleep(rand_wait()),
+      customer(BT, water, Name);
+    {evict, Pid, BCPid} -> io:fwrite("~s is leaving the bar\n", [Name]), BCPid ! {leaving, Pid}
   end.
 
 add_customer(Customer, Customers) ->
